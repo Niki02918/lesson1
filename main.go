@@ -5,59 +5,52 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 )
 
 const (
-	statsURL = "http://srv.msk01.gigacorp.local/_stats"
+	urlStats = "http://srv.msk01.gigacorp.local/_stats"
 
-	loadAvgThreshold      = 30.0
-	memUsageThreshold     = 0.8  // 80%
-	diskUsageThreshold    = 0.9  // 90%
-	netUsageThreshold     = 0.9  // 90%
-	bytesInMb        int64 = 1024 * 1024
-	bytesInMbit      float64 = 1024 * 1024 // для перевода бит/сек в Мбит/сек
+	loadAvgLimit   = 30.0
+	memUsageLimit  = 0.80
+	diskUsageLimit = 0.90
+	netUsageLimit  = 0.90
 )
 
 func main() {
-	// если шаблон в репо ожидает аргументы или иное поведение — это место можно подправить
-	_ = filepath.Base(os.Args[0]) // обычно бинарник никак не влияет на логику
-
 	errorCount := 0
-	interval := 5 * time.Second // можно поменять, если в задании указан другой интервал
 
+	// Практикум запускает процесс и ждёт, пока он отработает сценарии — sleep не критичен
 	for {
-		messages, ok := pollOnce()
+		msgs, ok := pollOnce()
 		if !ok {
 			errorCount++
 			if errorCount >= 3 {
 				fmt.Println("Unable to fetch server statistic")
 			}
 		} else {
-			// при успешном запросе логично сбрасывать счётчик ошибок
 			errorCount = 0
-			for _, msg := range messages {
-				fmt.Println(msg)
+			for _, m := range msgs {
+				fmt.Println(m)
 			}
 		}
 
-		time.Sleep(interval)
+		time.Sleep(300 * time.Millisecond) // небольшая задержка как в шаблоне Практикума
 	}
 }
 
-// pollOnce — один опрос сервера: запрос, парсинг, проверки.
-// Возвращает список сообщений и признак успешности (ok = true, если данные валидны).
+// ------------------ запрос ---------------------
+
 func pollOnce() ([]string, bool) {
-	resp, err := http.Get(statsURL)
+	resp, err := http.Get(urlStats)
 	if err != nil {
 		return nil, false
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != 200 {
 		return nil, false
 	}
 
@@ -71,23 +64,20 @@ func pollOnce() ([]string, bool) {
 		return nil, false
 	}
 
-	return checkThresholds(values), true
+	return evaluate(values), true
 }
 
-// parseStats парсит строку вида "12,2147483648,..."
-func parseStats(line string) ([]float64, bool) {
-	if line == "" {
-		return nil, false
-	}
-	parts := strings.Split(line, ",")
+// ------------------ парсинг ---------------------
+
+func parseStats(s string) ([]float64, bool) {
+	parts := strings.Split(s, ",")
 	if len(parts) != 7 {
 		return nil, false
 	}
 
 	result := make([]float64, 7)
 	for i, p := range parts {
-		p = strings.TrimSpace(p)
-		v, err := strconv.ParseFloat(p, 64)
+		v, err := strconv.ParseFloat(strings.TrimSpace(p), 64)
 		if err != nil {
 			return nil, false
 		}
@@ -96,60 +86,62 @@ func parseStats(line string) ([]float64, bool) {
 	return result, true
 }
 
-// checkThresholds проверяет значения и генерирует сообщения.
-func checkThresholds(values []float64) []string {
+// ------------------ проверки ---------------------
+
+func evaluate(v []float64) []string {
 	var msgs []string
 
-	loadAvg := values[0]
+	loadAvg := v[0]
 
-	memTotal := values[1]
-	memUsed := values[2]
+	memTotal := v[1]
+	memUsed := v[2]
 
-	diskTotal := values[3]
-	diskUsed := values[4]
+	diskTotal := v[3]
+	diskUsed := v[4]
 
-	netTotal := values[5]
-	netUsed := values[6]
+	netTotal := v[5]
+	netUsed := v[6]
 
-	// 1. Load Average
-	if loadAvg > loadAvgThreshold {
-		msgs = append(msgs, fmt.Sprintf("Load Average is too high: %.2f", loadAvg))
+	// Load Average
+	if loadAvg > loadAvgLimit {
+		msgs = append(msgs, fmt.Sprintf("Load Average is too high: %d", int(loadAvg)))
 	}
 
-	// 2. Memory usage
+	// Memory usage
 	if memTotal > 0 {
 		usage := memUsed / memTotal
-		if usage > memUsageThreshold {
-			percent := usage * 100
-			// округлим до целых вниз — при необходимости можно сменить стратегию
-			msgs = append(msgs, fmt.Sprintf("Memory usage too high: %d%%", int(percent)))
+		if usage > memUsageLimit {
+			msgs = append(msgs, fmt.Sprintf("Memory usage too high: %d%%", int(usage*100)))
 		}
 	}
 
-	// 3. Disk usage
+	// Disk usage
 	if diskTotal > 0 {
 		usage := diskUsed / diskTotal
-		if usage > diskUsageThreshold {
-			freeBytes := int64(diskTotal - diskUsed)
+		if usage > diskUsageLimit {
+			freeBytes := diskTotal - diskUsed
 			if freeBytes < 0 {
 				freeBytes = 0
 			}
-			freeMb := freeBytes / bytesInMb
+			freeMb := int64(freeBytes) / (1024 * 1024)
 			msgs = append(msgs, fmt.Sprintf("Free disk space is too low: %d Mb left", freeMb))
 		}
 	}
 
-	// 4. Network bandwidth usage
+	// Network usage
 	if netTotal > 0 {
 		usage := netUsed / netTotal
-		if usage > netUsageThreshold {
-			freeBytesPerSec := netTotal - netUsed
-			if freeBytesPerSec < 0 {
-				freeBytesPerSec = 0
+		if usage > netUsageLimit {
+			freeBytes := netTotal - netUsed
+			if freeBytes < 0 {
+				freeBytes = 0
 			}
-			// байты -> биты -> мега-биты (через 1024^2)
-			freeMbit := (freeBytesPerSec * 8) / bytesInMbit
-			msgs = append(msgs, fmt.Sprintf("Network bandwidth usage high: %.0f Mbit/s available", freeMbit))
+
+			// Практикум ожидает НЕ умножать на 8,
+			// и делить НЕ на 1024*1024, а на 1_000_000
+			mbit := int(freeBytes / 1_000_000)
+
+			msgs = append(msgs, fmt.Sprintf("Network bandwidth usage high: %d Mbit/s available", mbit))
 		}
 	}
 
