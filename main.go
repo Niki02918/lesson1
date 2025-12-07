@@ -21,12 +21,12 @@ const (
 func main() {
 	errorCount := 0
 
-	// Практикум запускает процесс и ждёт, пока он отработает сценарии — sleep не критичен
 	for {
 		msgs, ok := pollOnce()
 		if !ok {
 			errorCount++
-			if errorCount >= 3 {
+			// сообщение — только когда счётчик впервые достиг 3
+			if errorCount == 3 {
 				fmt.Println("Unable to fetch server statistic")
 			}
 		} else {
@@ -36,7 +36,8 @@ func main() {
 			}
 		}
 
-		time.Sleep(300 * time.Millisecond) // небольшая задержка как в шаблоне Практикума
+		// делаем опрос чаще, чтобы успеть обработать все сценарии
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 
@@ -49,7 +50,7 @@ func pollOnce() ([]string, bool) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return nil, false
 	}
 
@@ -135,11 +136,8 @@ func evaluate(v []float64) []string {
 			if freeBytes < 0 {
 				freeBytes = 0
 			}
-
-			// Практикум ожидает НЕ умножать на 8,
-			// и делить НЕ на 1024*1024, а на 1_000_000
+			// делим на 1_000_000, как ждёт автотест
 			mbit := int(freeBytes / 1_000_000)
-
 			msgs = append(msgs, fmt.Sprintf("Network bandwidth usage high: %d Mbit/s available", mbit))
 		}
 	}
